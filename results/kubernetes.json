@@ -1,0 +1,51 @@
+{
+  "cpus_visible": 8,
+  "duration_seconds": 30,
+  "environment": "linux/arm64",
+  "failed_recovery_probes": 1640,
+  "go": "go1.27.3",
+  "payload_bytes": 128,
+  "recovery_ms": [
+    477.417,
+    263.59,
+    212.93,
+    313.562,
+    236.263,
+    247.503,
+    263.722,
+    1014.907,
+    236.515,
+    294.683,
+    301.795,
+    267.473,
+    263.197,
+    259.674,
+    285.413,
+    249.031,
+    229.958,
+    274.358,
+    266.39,
+    316.833
+  ],
+  "recovery_p95_ms": 477.417,
+  "tested_commit": "7882474559495ea6b87479dc32b3f5237d7d22dd",
+  "timestamp_utc": "2026-11-10T08:15:12.842396092Z",
+  "workers": 96,
+  "writes": [
+    {
+      "acknowledged": 65746,
+      "errors": 20882,
+      "writes_per_sec": 2191.5333333333333
+    },
+    {
+      "acknowledged": 83122,
+      "errors": 30998,
+      "writes_per_sec": 2770.733333333333
+    },
+    {
+      "acknowledged": 76645,
+      "errors": 13834,
+      "writes_per_sec": 2554.8333333333335
+    }
+  ]
+}
