@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+spec:
+  selector:
+    matchLabels: {app: prometheus}
+  template:
+    metadata:
+      labels: {app: prometheus}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.5.0
+          ports:
+            - {containerPort: 9090}
+          volumeMounts:
+            - {name: config, mountPath: /etc/prometheus, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: prometheus-config}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+spec:
+  selector: {app: prometheus}
+  ports:
+    - {port: 9090}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+spec:
+  selector:
+    matchLabels: {app: grafana}
+  template:
+    metadata:
+      labels: {app: grafana}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: grafana
+          image: grafana/grafana:12.2.0
+          ports:
+            - {containerPort: 3000}
+          env:
+            - {name: GF_AUTH_ANONYMOUS_ENABLED, value: "true"}
+            - {name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: Viewer}
+          volumeMounts:
+            - {name: datasource, mountPath: /etc/grafana/provisioning/datasources, readOnly: true}
+            - {name: provider, mountPath: /etc/grafana/provisioning/dashboards, readOnly: true}
+            - {name: dashboard, mountPath: /var/lib/grafana/dashboards, readOnly: true}
+      volumes:
+        - name: datasource
+          configMap: {name: grafana-datasource}
+        - name: provider
+          configMap: {name: grafana-provider}
+        - name: dashboard
+          configMap: {name: grafana-dashboard}

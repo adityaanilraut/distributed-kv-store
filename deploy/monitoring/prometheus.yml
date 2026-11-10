@@ -1,0 +1,6 @@
+global:
+  scrape_interval: 2s
+scrape_configs:
+  - job_name: raft
+    static_configs:
+      - targets: [raft-0.raft:8080, raft-1.raft:8080, raft-2.raft:8080, raft-3.raft:8080, raft-4.raft:8080]
