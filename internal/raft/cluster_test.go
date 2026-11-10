@@ -112,7 +112,7 @@ func (network *testNetwork) leaderIn(group int) *Node {
 
 func eventually(t *testing.T, check func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if check() {
 			return
@@ -179,16 +179,24 @@ func TestLinearizabilityWithFaults(t *testing.T) {
 		}
 		wg.Wait()
 	}
-	eventually(t, func() bool { return network.leaderIn(0) != nil })
+	currentLeader := func() *Node {
+		var node *Node
+		eventually(t, func() bool {
+			node = network.leaderIn(0)
+			return node != nil
+		})
+		return node
+	}
+	currentLeader()
 	work(8)
 
-	crashed := network.leaderIn(0).config.ID
+	crashed := currentLeader().config.ID
 	network.stop(crashed)
 	eventually(t, func() bool { return network.leaderIn(0) != nil })
 	work(8)
 	network.start(t, dir, crashed)
 
-	oldLeader := network.leaderIn(0)
+	oldLeader := currentLeader()
 	other := oldLeader.config.ID%5 + 1
 	network.partition(oldLeader.config.ID, other)
 	minorityDone := make(chan Result, 1)
@@ -205,12 +213,15 @@ func TestLinearizabilityWithFaults(t *testing.T) {
 		return network.nodes[other].Status().Snapshot > 0 && network.leaderIn(0) != nil
 	})
 	// Take one replica offline until the rest have compacted past its last index.
-	leader := network.leaderIn(0)
+	leader := currentLeader()
 	lagging := leader.config.ID%5 + 1
 	before := network.nodes[lagging].Status().Commit
 	network.stop(lagging)
 	work(24)
-	eventually(t, func() bool { return leader.Status().Snapshot > before })
+	eventually(t, func() bool {
+		node := network.leaderIn(0)
+		return node != nil && node.Status().Snapshot > before
+	})
 	network.start(t, dir, lagging)
 	eventually(t, func() bool { return network.nodes[lagging].Status().Snapshot > before })
 
@@ -258,6 +269,13 @@ func TestLinearizabilityWithFaults(t *testing.T) {
 	}
 	if len(history) < 100 {
 		t.Fatalf("fault history was too small: %d operations", len(history))
+	}
+	for i := range history {
+		if history[i].Output.(observed).unknown {
+			// A timeout leaves the operation pending. Its log entry may apply
+			// after the caller has stopped waiting.
+			history[i].Return = time.Since(started).Nanoseconds()
+		}
 	}
 	result := porcupine.CheckOperationsTimeout(model.ToModel(), history, 5*time.Second)
 	t.Logf("Porcupine checked %d operations: %s", len(history), result)

@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"slices"
 	"time"
 )
 
@@ -68,6 +69,14 @@ func (n *Node) HandleAppend(req AppendRequest) AppendResponse {
 	}
 	var cut uint64
 	var additions []Entry
+	for offset, entry := range req.Entries {
+		if entry.Index != req.PrevIndex+1+uint64(offset) || entry.Term == 0 || entry.Term > req.Term {
+			if changed {
+				n.persist(0, nil, nil)
+			}
+			return res
+		}
+	}
 	for offset, entry := range req.Entries {
 		index := req.PrevIndex + 1 + uint64(offset)
 		if index > n.lastIndex() || n.termAt(index) != entry.Term {
@@ -205,22 +214,21 @@ func (n *Node) send(id uint64) bool {
 }
 
 func (n *Node) advanceCommit() {
-	for index := n.lastIndex(); index > n.hard.Commit && n.termAt(index) == n.hard.Term; index-- {
-		count := 1
-		for _, p := range n.peers {
-			if p.match >= index {
-				count++
-			}
-		}
-		if count < 3 {
-			continue
-		}
-		n.hard.Commit = index
-		if n.persist(0, nil, nil) {
-			n.apply()
-			n.compact()
-			n.notifyPeers()
-		}
+	matches := [5]uint64{n.lastIndex()}
+	next := 1
+	for _, peer := range n.peers {
+		matches[next] = peer.match
+		next++
+	}
+	slices.Sort(matches[:])
+	index := matches[2]
+	if index <= n.hard.Commit || n.termAt(index) != n.hard.Term {
 		return
+	}
+	n.hard.Commit = index
+	if n.persist(0, nil, nil) {
+		n.apply()
+		n.compact()
+		n.notifyPeers()
 	}
 }

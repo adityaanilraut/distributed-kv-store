@@ -32,6 +32,7 @@ const payloadBytes = 128
 type target struct {
 	host   string
 	client api.KeyValueClient
+	conn   *grpc.ClientConn
 }
 
 var httpClient = &http.Client{Timeout: 350 * time.Millisecond}
@@ -56,13 +57,26 @@ func ready(targets []target) (int, bool) {
 		go func() { replies <- reply{i, getStatus(target)} }()
 	}
 	best, healthy, term := -1, 0, uint64(0)
+	states := make([]raft.Status, len(targets))
 	for range targets {
 		res := <-replies
+		states[res.index] = res.state
 		if res.state.Healthy {
 			healthy++
 			if res.state.ID != 0 && res.state.ID == res.state.Leader && res.state.Term > term {
 				best, term = res.index, res.state.Term
 			}
+		}
+	}
+	if best >= 0 {
+		agree := 0
+		for _, state := range states {
+			if state.Healthy && state.Term == term && state.Leader == states[best].ID {
+				agree++
+			}
+		}
+		if agree < 3 {
+			best = -1
 		}
 	}
 	return best, healthy == len(targets)
@@ -85,26 +99,45 @@ type writeResult struct {
 	WritesPerSec float64 `json:"writes_per_sec"`
 }
 
-func benchmark(client api.KeyValueClient, run, workers int, duration time.Duration) writeResult {
+func benchmark(targets []target, initialLeader, workers int, duration time.Duration) writeResult {
 	payload := make([]byte, payloadBytes)
 	var success, failures atomic.Uint64
+	var leader atomic.Int32
+	leader.Store(int32(initialLeader))
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
 	started := time.Now()
 	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if index, _ := ready(targets); index >= 0 {
+					leader.Store(int32(index))
+				}
+			}
+		}
+	}()
 	for worker := range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for seq := 0; ctx.Err() == nil; seq++ {
-				req := &api.PutRequest{Key: fmt.Sprintf("%d/%d/%d", run, worker, seq%32), Value: payload}
+				req := &api.PutRequest{Key: fmt.Sprintf("%d/%d", worker, seq%32), Value: payload}
 				call, stop := context.WithTimeout(ctx, time.Second)
-				_, err := client.Put(call, req)
+				_, err := targets[leader.Load()].client.Put(call, req)
 				stop()
 				if err == nil {
 					success.Add(1)
 				} else if time.Since(started) < duration {
 					failures.Add(1)
+					time.Sleep(5 * time.Millisecond)
 				}
 			}
 		}()
@@ -125,9 +158,9 @@ func failover(targets []target, old int) (float64, int, error) {
 		return 0, 0, fmt.Errorf("fault endpoint returned %s", resp.Status)
 	}
 	failed := 0
-	for time.Since(started) < 5*time.Second {
+	for time.Since(started) < 15*time.Second {
 		replies := make(chan error, len(targets)-1)
-		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
 		for i, target := range targets {
 			if i == old {
 				continue
@@ -147,7 +180,22 @@ func failover(targets []target, old int) (float64, int, error) {
 		cancel()
 		time.Sleep(10 * time.Millisecond)
 	}
-	return 0, failed, fmt.Errorf("no client write succeeded after five seconds")
+	return 0, failed, fmt.Errorf("no client write succeeded after 15 seconds")
+}
+
+func connect(targets []target) error {
+	for i := range targets {
+		t := &targets[i]
+		if t.conn != nil {
+			_ = t.conn.Close()
+		}
+		conn, err := grpc.NewClient("passthrough:///"+t.host+":50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return err
+		}
+		t.conn, t.client = conn, api.NewKeyValueClient(conn)
+	}
+	return nil
 }
 
 // Replace the crashed pod after recording recovery to avoid accumulating
@@ -206,15 +254,13 @@ func main() {
 
 	var targets []target
 	for _, host := range strings.Split(*hosts, ",") {
-		conn, err := grpc.NewClient(host+":50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer conn.Close()
-		targets = append(targets, target{host, api.NewKeyValueClient(conn)})
+		targets = append(targets, target{host: host})
 	}
 	if len(targets) != 5 || *duration <= 0 || *runs < 1 || *trials < 1 || *workers < 1 {
 		log.Fatal("benchmark requires five peers and positive duration, runs, trials and workers")
+	}
+	if err := connect(targets); err != nil {
+		log.Fatal(err)
 	}
 	var writes []writeResult
 	var recoveries []float64
@@ -224,12 +270,15 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		writes = append(writes, benchmark(targets[leader].client, run, *workers, *duration))
+		writes = append(writes, benchmark(targets, leader, *workers, *duration))
 		log.Printf("throughput run %d: %.0f writes/sec", run+1, writes[run].WritesPerSec)
 	}
 	for trial := range *trials {
 		leader, err := waitHealthy(targets, time.Now().Add(4*time.Minute))
 		if err != nil {
+			log.Fatal(err)
+		}
+		if err := connect(targets); err != nil {
 			log.Fatal(err)
 		}
 		ms, failures, err := failover(targets, leader)

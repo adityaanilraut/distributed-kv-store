@@ -133,7 +133,7 @@ func Open(cfg Config, transport Transport) (*Node, error) {
 		seen[peer] = true
 	}
 	if cfg.SnapshotEvery == 0 {
-		cfg.SnapshotEvery = 8192
+		cfg.SnapshotEvery = 32768
 	}
 	store, err := openStorage(cfg.Path)
 	if err != nil {
@@ -261,6 +261,8 @@ func (n *Node) addProposals(batch []proposal) {
 			req.reply <- Result{Err: ErrUnavailable}
 		case n.role != leader:
 			req.reply <- Result{Err: ErrNotLeader, Leader: n.leader}
+		case n.lastIndex()-n.hard.Commit+uint64(len(pending)) >= 32768:
+			req.reply <- Result{Err: ErrBusy}
 		default:
 			index := n.lastIndex() + uint64(len(pending)) + 1
 			pending = append(pending, Entry{index, n.hard.Term, req.op})
@@ -274,7 +276,7 @@ func (n *Node) addProposals(batch []proposal) {
 }
 
 func (n *Node) resetDeadline() {
-	n.deadline = time.Now().Add(150*time.Millisecond + time.Duration(rand.IntN(150))*time.Millisecond)
+	n.deadline = time.Now().Add(200*time.Millisecond + time.Duration(rand.IntN(150))*time.Millisecond)
 }
 
 func (n *Node) lastIndex() uint64 { return n.snapshot.Index + uint64(len(n.entries)) }
